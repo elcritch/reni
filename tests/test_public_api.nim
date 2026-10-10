@@ -158,6 +158,7 @@ suite "the README's export list is the whole export list":
     mustExport Regex
     mustExport RegexFlag
     mustExport RegexFlags
+    mustExport rfCaptureGroup
     mustExport pattern
     mustExport flags
     mustExport captureCount
@@ -165,6 +166,10 @@ suite "the README's export list is the whole export list":
     mustExport captureIndex
 
   test "running one":
+    mustExport MatchOption
+    mustExport MatchOptions
+    mustExport moNotBeginString
+    mustExport moNotBeginPosition
     mustExport search
     mustExport searchBackward
     mustExport matchAt

@@ -1984,9 +1984,11 @@ proc isSimpleRepeatBody(node: Node): bool {.inline.} =
     return false
   if node.kind == nkCharType:
     return node.charType notin {ctGraphemeCluster, ctNewlineSeq}
-  node.kind in {
-    nkLiteral, nkEscapedLiteral, nkString, nkCharClass, nkBackreference, nkNamedBackref
-  }
+  node.kind in
+    {
+      nkLiteral, nkEscapedLiteral, nkString, nkCharClass, nkBackreference,
+      nkNamedBackref,
+    }
 
 proc reduceLeadingRepeat(node: Node): bool =
   ## Pin one leading repeat of a look-behind body to its lower bound.
@@ -2236,6 +2238,10 @@ proc hasTopLevelFindLongest(node: Node): bool =
   false
 
 proc re*(pattern: string, flags: RegexFlags = {}): Regex =
+  ## Compile a reusable pattern. With ``rfCaptureGroup``, ordinary groups keep
+  ## their numbers even when named groups exist, and numbered references stay
+  ## available. This corresponds to Oniguruma's ``ONIG_OPTION_CAPTURE_GROUP``;
+  ## without it, named groups retain Oniguruma's default capture behavior.
   validateUtf8(pattern)
   var p = initParser(pattern, flags)
   var ast = p.parseRegex()
@@ -2254,7 +2260,7 @@ proc re*(pattern: string, flags: RegexFlags = {}): Regex =
     resolveForwardRefConditions(ast, namedCaptures)
   # When named captures exist, demote unnamed captures to non-capturing groups
   # (Oniguruma default behavior: unnamed groups don't capture when named groups present)
-  if namedCaptures.len > 0:
+  if namedCaptures.len > 0 and rfCaptureGroup notin flags:
     validateNoNumberedRefs(ast)
     var indexMap: Table[int, int]
     var newIdx = 0

@@ -87,3 +87,34 @@ captured run stays self-describing:
 5. **Compile, per item** — pattern compilation cost (`re` vs. `onig_new` vs.
    `pcre2_compile`, with and without a JIT pass).
 6. **Patterns** — the regex behind each item, so the workload is inspectable.
+
+## TextMate captures and anchor options
+
+```sh
+nim c -d:release -o:/tmp/reni_bench_textmate bench/bench_textmate.nim
+/tmp/reni_bench_textmate 10000 9
+```
+
+This separate short-subject benchmark checks every capture span before timing.
+It compares `rfCaptureGroup` against the former client workaround of assigning
+private names to ordinary groups and rewriting numeric references. Compile time
+excludes the client's rewrite itself, so it understates the work avoided.
+Search uses one reused context and result, with compilation excluded.
+
+The anchor case compares compiling four source variants of one rule against
+compiling it once and using `MatchOptions`. Search performs the same number of
+calls, cycling all four option combinations; it borrows variant regexes to
+avoid charging deep copies to that baseline. Both modes use the same context
+and agree on all numbered captures.
+
+On an Apple M3 Pro, macOS arm64, Nim 2.2.12, release/ORC, 10,000 rounds,
+100,000 search rounds, two warmups and median of nine samples (2026-10-11), native mixed-capture
+compilation took about 14–23% less time on these five small patterns.
+Per-call anchor options reduced the anchor case's compile time from about
+222 ms to 52 ms, and search time from 159 ms to 112 ms. The compile saving
+includes the intended reduction from four compiled patterns to one; the
+search saving includes avoiding repeated binding to different trees.
+
+These are focused API workloads, not a claim about whole-document TextMate
+throughput or a general speedup for existing callers. Run the harness on the
+target machine to measure its effect there.

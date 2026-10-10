@@ -97,6 +97,7 @@ type
     flags: RegexFlags
     captures: seq[Span]
     searchStart: int
+    matchOptions: MatchOptions
     keepStart: int
     regex: ptr Regex
       ## Borrowed for one matcher entry point, exactly like ``subject``:
@@ -1520,18 +1521,19 @@ proc anchorHolds(ctx: MatchContext, kind: AnchorKind): bool =
   ## belongs to the committing caller.
   case kind
   of akLineBegin:
-    ctx.pos == 0 or (ctx.pos > 0 and ctx.subject[ctx.pos - 1] == '\n')
+    ctx.pos == 0 or
+      (ctx.pos > 0 and ctx.pos < ctx.anchorEnd and ctx.subject[ctx.pos - 1] == '\n')
   of akLineEnd:
     ctx.pos >= ctx.anchorEnd or ctx.subject[ctx.pos] == '\n'
   of akStringBegin:
-    ctx.pos == 0
+    moNotBeginString notin ctx.matchOptions and ctx.pos == 0
   of akStringEnd:
     ctx.pos >= ctx.anchorEnd
   of akStringEndOrNewline:
     ctx.pos >= ctx.anchorEnd or
       (ctx.pos == ctx.anchorEnd - 1 and ctx.subject[ctx.pos] == '\n')
   of akSearchBegin:
-    ctx.pos == ctx.searchStart
+    moNotBeginPosition notin ctx.matchOptions and ctx.pos == ctx.searchStart
   of akKeep:
     true
   of akWordBoundary, akNotWordBoundary:
@@ -2385,9 +2387,10 @@ proc negLookbehindHolds(ctx: MatchContext, node: Node): bool =
   let bodyLen = ctx.bodyBounds(node)
   if bodyLen.fixedLen >= 0:
     # Fixed length: one starting position, so one attempt decides it.
-    return not lookbehindBodyMatches(
-      ctx, body, targetEnd, bodyLen.fixedLen, ctx.bodyWindow(node)
-    )
+    return
+      not lookbehindBodyMatches(
+        ctx, body, targetEnd, bodyLen.fixedLen, ctx.bodyWindow(node)
+      )
   # Variable-length (non-alternation): scan from right to left
   let negMbl = bodyLen.maxLen
   let negMinPos =
@@ -4709,12 +4712,24 @@ proc resetForRegex(
     ctx.trackCaptureStacks = regex[].levelBackrefs
     # Node ids name slots in this tree only; so does the cache keyed on one.
     ctx.seqCacheNode = NoNodeId
-    ctx.leadRun = if regex[].leadRun == nil: NoNodeId else: regex[].leadRun.id
+    ctx.leadRun =
+      if regex[].leadRun == nil:
+        NoNodeId
+      else:
+        regex[].leadRun.id
     # Only single-way leaves qualify; pin the compile-time guarantee.
     assert regex[].leadLeaf == nil or isSingleWayLeaf(ctx, regex[].leadLeaf)
-    ctx.leadLeaf = if regex[].leadLeaf == nil: NoNodeId else: regex[].leadLeaf.id
+    ctx.leadLeaf =
+      if regex[].leadLeaf == nil:
+        NoNodeId
+      else:
+        regex[].leadLeaf.id
     assert regex[].leadRepeat == nil or isSingleWayLeaf(ctx, regex[].leadRepeat)
-    ctx.leadRepeat = if regex[].leadRepeat == nil: NoNodeId else: regex[].leadRepeat.id
+    ctx.leadRepeat =
+      if regex[].leadRepeat == nil:
+        NoNodeId
+      else:
+        regex[].leadRepeat.id
     # Plain data keyed on the tree above, as the lead indices are.
     ctx.leadAnchorsLen = 0
     for a in regex[].leadAnchors:
@@ -4837,6 +4852,7 @@ proc searchImplInto*(
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
     sameSubject: bool = false,
+    options: MatchOptions = {},
 ) =
   ## In-place variant of ``searchImpl``: writes into ``m``, reusing
   ## ``ctx``'s buffers and ``m.boundaries``' capacity across calls.
@@ -4861,6 +4877,7 @@ proc searchImplInto*(
   if rbValid and indexOfByte(subject, start, rbByte) < 0:
     noteScratchUsage(ctx)
     return
+  ctx.matchOptions = options
   resetForRegex(
     ctx, subject, unsafeAddr regex, stepLimit, maxRecursionDepth, sameSubject
   )
@@ -5169,6 +5186,7 @@ proc searchImpl*(
     start: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   let ctx = newMatchContext(regex.captureCount)
   searchImplInto(
@@ -5179,6 +5197,7 @@ proc searchImpl*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
 
 proc searchBackwardImplInto*(
@@ -5189,6 +5208,7 @@ proc searchBackwardImplInto*(
     start: int = -1,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ) =
   ## In-place variant of ``searchBackwardImpl``.  Reuses ``ctx``.
   defer:
@@ -5201,6 +5221,7 @@ proc searchBackwardImplInto*(
   if regex.requiredByte.valid and indexOfByte(subject, 0, regex.requiredByte.byte) < 0:
     noteScratchUsage(ctx)
     return
+  ctx.matchOptions = options
   resetForRegex(ctx, subject, unsafeAddr regex, stepLimit, maxRecursionDepth)
   let fc = regex.firstCharInfo
   var startPos =
@@ -5279,6 +5300,7 @@ proc searchBackwardImpl*(
     start: int = -1,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   ## Search backward: try starting positions from right to left,
   ## return the first (rightmost) forward match found.
@@ -5292,6 +5314,7 @@ proc searchBackwardImpl*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
 
 proc matchAtImplInto*(
@@ -5302,11 +5325,13 @@ proc matchAtImplInto*(
     pos: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ) =
   ## In-place variant of ``matchAtImpl``.  Reuses ``ctx``.
   defer:
     releaseBorrowed(ctx)
   writeNotFound(m)
+  ctx.matchOptions = options
   resetForRegex(ctx, subject, unsafeAddr regex, stepLimit, maxRecursionDepth)
   resetForPosition(ctx, pos, pos)
   if matchNode(ctx, regex.ast):
@@ -5322,6 +5347,7 @@ proc matchAtImpl*(
     pos: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   ## Try to match only at the given position (no scanning).
   let ctx = newMatchContext(regex.captureCount)
@@ -5333,4 +5359,5 @@ proc matchAtImpl*(
     pos = pos,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )

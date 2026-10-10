@@ -7,6 +7,7 @@
 ## ========
 ##
 ## - Capture groups (numbered and named)
+## - ``rfCaptureGroup`` for TextMate-compatible mixed capture numbering
 ## - Backreferences and named backreferences with recursion-level support
 ## - Lookaround assertions (lookahead, lookbehind, negative variants)
 ## - Atomic groups ``(?>...)``
@@ -81,6 +82,8 @@ export
   types.namedCaptures,
   types.RegexFlag,
   types.RegexFlags,
+  types.MatchOption,
+  types.MatchOptions,
   # What a match answers with.
   types.Match,
   types.Span,
