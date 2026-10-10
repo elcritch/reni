@@ -1,6 +1,6 @@
 ## Public-API regressions found while comparing TextMate tokenization with
 ## vscode-oniguruma 2.0.1 (which compiles with ONIG_OPTION_CAPTURE_GROUP).
-import std/[options, sequtils, unittest]
+import std/[options, sequtils, strutils, unittest]
 import ../reni
 
 suite "capture-group compile option":
@@ -47,6 +47,30 @@ suite "capture-group compile option":
     for pattern in [r"(a)(?<name>b)\k<3>", r"(a)(?<name>b)\g<3>"]:
       expect RegexError:
         discard re(pattern, {rfCaptureGroup})
+
+  test "oversized numeric references raise RegexError rather than a defect":
+    let huge = "9".repeat(100)
+    for suffix in [
+      "\\k<" & huge & ">",
+      "\\k<1+" & huge & ">",
+      "\\g<" & huge & ">",
+      "\\g<+" & huge & ">",
+      "(?" & huge & ")",
+      "(?+" & huge & ")",
+      "(?(" & huge & ")a|b)",
+      "(?('" & huge & "')a|b)",
+      "(*MAX{" & huge & "})",
+      "\\k<+" & $high(int) & ">",
+      "\\g<+" & $high(int) & ">",
+      "(?+" & $high(int) & ")",
+    ]:
+      checkpoint(suffix)
+      expect RegexError:
+        discard re("(a)(?<name>b)" & suffix, {rfCaptureGroup})
+
+  test "long plain numeric escapes retain their octal fallback":
+    let digits = "1".repeat(100)
+    check search("I" & "1".repeat(97), re("\\" & digits)).found
 
   test "the default still demotes ordinary captures and rejects numbered refs":
     let regex = re("(a)(?<name>b)(c)")

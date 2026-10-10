@@ -1,5 +1,5 @@
 import std/unicode
-from std/strutils import toUpperAscii, find, parseInt
+from std/strutils import toUpperAscii, find
 
 import types, charclass, unicode_utils, stackguard
 
@@ -84,6 +84,17 @@ proc expect(p: var Parser, ch: char) =
 proc error(p: Parser, msg: string) {.noreturn.} =
   raise newException(RegexError, msg & " at position " & $p.pos)
 
+proc appendDecimal(value: var int, digit: char) =
+  let n = ord(digit) - ord('0')
+  if value > (high(int) - n) div 10:
+    raise newException(RegexError, "numeric regex argument is too large")
+  value = value * 10 + n
+
+proc relativeForwardIndex(p: Parser, index: int): int =
+  if index > high(int) - p.captureCount:
+    p.error("relative capture reference is too large")
+  p.captureCount + index
+
 proc charToFlag(ch: char): RegexFlag =
   case ch
   of 'i':
@@ -154,7 +165,7 @@ proc parseQuantifier(p: var Parser, body: Node): Node =
       while p.peek in {'0' .. '9'}:
         if n > MaxRepeat:
           p.error("quantifier value too large (max " & $MaxRepeat & ")")
-        n = n * 10 + (ord(p.peek) - ord('0'))
+        appendDecimal(n, p.peek)
         p.advance()
     if p.peek == ',':
       braceHasComma = true
@@ -165,7 +176,7 @@ proc parseQuantifier(p: var Parser, body: Node): Node =
         while p.peek in {'0' .. '9'}:
           if m > MaxRepeat:
             p.error("quantifier value too large (max " & $MaxRepeat & ")")
-          m = m * 10 + (ord(p.peek) - ord('0'))
+          appendDecimal(m, p.peek)
           p.advance()
     if p.peek == '}':
       p.advance()
@@ -348,7 +359,11 @@ proc parseEscape(p: var Parser): Node =
       p.advance()
     var idx = 0
     for c in idxStr:
-      idx = idx * 10 + (ord(c) - ord('0'))
+      let digit = ord(c) - ord('0')
+      if idx > (high(int) - digit) div 10:
+        idx = high(int)
+        break
+      appendDecimal(idx, c)
     if idxStr.len == 1 or idx <= p.captureCount:
       # Single digit (\1-\9) or valid multi-digit backref
       result = Node(kind: nkBackreference, backrefIndex: idx)
@@ -664,7 +679,7 @@ proc parseEscape(p: var Parser): Node =
           break
       if isLevelNum:
         for c in levelStr:
-          level = level * 10 + (ord(c) - ord('0'))
+          appendDecimal(level, c)
         if name[levelPos] == '-':
           level = -level
         baseName = name[0 ..< levelPos]
@@ -685,14 +700,14 @@ proc parseEscape(p: var Parser): Node =
       if isNum and baseName.len > startIdx:
         var idx = 0
         for i in startIdx ..< baseName.len:
-          idx = idx * 10 + (ord(baseName[i]) - ord('0'))
+          appendDecimal(idx, baseName[i])
         if neg:
           let origN = idx
           idx = p.captureCount - idx + 1
           if idx < 1:
             p.error("invalid relative backref '\\k<-" & $origN & ">'")
         elif baseName[0] == '+':
-          idx = p.captureCount + idx
+          idx = p.relativeForwardIndex(idx)
           # Forward reference — bounds checked at compile time.
         result = Node(kind: nkBackreference, backrefIndex: idx, backrefLevel: level)
       else:
@@ -744,20 +759,20 @@ proc parseEscape(p: var Parser): Node =
       callIndex = 0
       for c in name:
         if c in {'0' .. '9'}:
-          callIndex = callIndex * 10 + (ord(c) - ord('0'))
+          appendDecimal(callIndex, c)
         else:
           break
     elif name[0] == '+':
       var n = 0
       for i in 1 ..< name.len:
         if name[i] in {'0' .. '9'}:
-          n = n * 10 + (ord(name[i]) - ord('0'))
-      callIndex = p.captureCount + n
+          appendDecimal(n, name[i])
+      callIndex = p.relativeForwardIndex(n)
     elif name[0] == '-':
       var n = 0
       for i in 1 ..< name.len:
         if name[i] in {'0' .. '9'}:
-          n = n * 10 + (ord(name[i]) - ord('0'))
+          appendDecimal(n, name[i])
       callIndex = p.captureCount - n + 1
       if callIndex < 1:
         p.error("invalid relative subexp call '\\g<-" & $n & ">'")
@@ -817,11 +832,9 @@ proc parseCalloutVerb(p: var Parser): Node =
       numStr.add(p.peek)
       p.advance()
     p.expect('}')
-    let maxN =
-      if numStr.len > 0:
-        parseInt(numStr)
-      else:
-        0
+    var maxN = 0
+    for digit in numStr:
+      appendDecimal(maxN, digit)
     if tag.len == 0:
       tag = "__max_" & $p.pos
     Node(kind: nkCalloutMax, maxCount: maxN, maxTag: tag)
@@ -886,7 +899,7 @@ proc resolveCondRef(
     condKind = ckBackref
     condIndex = 0
     for c in name:
-      condIndex = condIndex * 10 + (ord(c) - ord('0'))
+      appendDecimal(condIndex, c)
   else:
     condKind = ckNamedRef
     condName = name
@@ -1229,7 +1242,7 @@ proc parseConditional(p: var Parser): Node =
     condKind = ckBackref
     condIndex = 0
     for c in numStr:
-      condIndex = condIndex * 10 + (ord(c) - ord('0'))
+      appendDecimal(condIndex, c)
     if neg:
       let origN = condIndex
       condIndex = p.captureCount - condIndex + 1
@@ -1444,7 +1457,7 @@ proc parseGroup(p: var Parser): Node =
         # (?1), (?2), etc. — numeric subroutine call (= \g<n>)
         var n = 0
         while not p.atEnd and p.peek in {'0' .. '9'}:
-          n = n * 10 + (ord(p.peek) - ord('0'))
+          appendDecimal(n, p.peek)
           p.advance()
         result = Node(kind: nkSubexpCall, callIndex: n, callName: "")
       elif p.peek == '+':
@@ -1452,15 +1465,16 @@ proc parseGroup(p: var Parser): Node =
         p.advance()
         var n = 0
         while not p.atEnd and p.peek in {'0' .. '9'}:
-          n = n * 10 + (ord(p.peek) - ord('0'))
+          appendDecimal(n, p.peek)
           p.advance()
-        result = Node(kind: nkSubexpCall, callIndex: p.captureCount + n, callName: "")
+        result =
+          Node(kind: nkSubexpCall, callIndex: p.relativeForwardIndex(n), callName: "")
       elif p.peek == '-' and p.pos + 1 < p.src.len and p.src[p.pos + 1] in {'0' .. '9'}:
         # (?-1) — relative backward subroutine call
         p.advance()
         var n = 0
         while not p.atEnd and p.peek in {'0' .. '9'}:
-          n = n * 10 + (ord(p.peek) - ord('0'))
+          appendDecimal(n, p.peek)
           p.advance()
         let ci = p.captureCount - n + 1
         if ci < 1:
