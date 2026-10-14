@@ -1522,7 +1522,7 @@ proc anchorHolds(ctx: MatchContext, kind: AnchorKind): bool =
   case kind
   of akLineBegin:
     ctx.pos == 0 or
-      (ctx.pos > 0 and ctx.pos < ctx.anchorEnd and ctx.subject[ctx.pos - 1] == '\n')
+      (ctx.pos > 0 and ctx.pos < ctx.subject.len and ctx.subject[ctx.pos - 1] == '\n')
   of akLineEnd:
     ctx.pos >= ctx.anchorEnd or ctx.subject[ctx.pos] == '\n'
   of akStringBegin:
@@ -2387,10 +2387,9 @@ proc negLookbehindHolds(ctx: MatchContext, node: Node): bool =
   let bodyLen = ctx.bodyBounds(node)
   if bodyLen.fixedLen >= 0:
     # Fixed length: one starting position, so one attempt decides it.
-    return
-      not lookbehindBodyMatches(
-        ctx, body, targetEnd, bodyLen.fixedLen, ctx.bodyWindow(node)
-      )
+    return not lookbehindBodyMatches(
+      ctx, body, targetEnd, bodyLen.fixedLen, ctx.bodyWindow(node)
+    )
   # Variable-length (non-alternation): scan from right to left
   let negMbl = bodyLen.maxLen
   let negMinPos =
@@ -4712,24 +4711,12 @@ proc resetForRegex(
     ctx.trackCaptureStacks = regex[].levelBackrefs
     # Node ids name slots in this tree only; so does the cache keyed on one.
     ctx.seqCacheNode = NoNodeId
-    ctx.leadRun =
-      if regex[].leadRun == nil:
-        NoNodeId
-      else:
-        regex[].leadRun.id
+    ctx.leadRun = if regex[].leadRun == nil: NoNodeId else: regex[].leadRun.id
     # Only single-way leaves qualify; pin the compile-time guarantee.
     assert regex[].leadLeaf == nil or isSingleWayLeaf(ctx, regex[].leadLeaf)
-    ctx.leadLeaf =
-      if regex[].leadLeaf == nil:
-        NoNodeId
-      else:
-        regex[].leadLeaf.id
+    ctx.leadLeaf = if regex[].leadLeaf == nil: NoNodeId else: regex[].leadLeaf.id
     assert regex[].leadRepeat == nil or isSingleWayLeaf(ctx, regex[].leadRepeat)
-    ctx.leadRepeat =
-      if regex[].leadRepeat == nil:
-        NoNodeId
-      else:
-        regex[].leadRepeat.id
+    ctx.leadRepeat = if regex[].leadRepeat == nil: NoNodeId else: regex[].leadRepeat.id
     # Plain data keyed on the tree above, as the lead indices are.
     ctx.leadAnchorsLen = 0
     for a in regex[].leadAnchors:

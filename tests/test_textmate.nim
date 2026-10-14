@@ -90,6 +90,14 @@ suite "Oniguruma line and search anchors":
     check matchAt("a\nb", re("^"), pos = 2).found
     check searchBackward("a\n", re("^")).matchSpan == 0 .. 0
 
+  test "line begin uses the subject end inside an absent range":
+    for pattern in [r"(?~|b)a\n^", r"(?~|b|a\n^)"]:
+      let regex = re(pattern)
+      check search("a\nb", regex).matchSpan == 0 .. 2
+      check matchAt("a\nb", regex).matchSpan == 0 .. 2
+      check searchBackward("a\nb", regex).matchSpan == 0 .. 2
+      check not search("a\n", regex).found
+
   test "line end and string end still match at EOF":
     for subject in ["", "a", "a\n"]:
       for pattern in ["$", r"\z", r"\Z"]:

@@ -1984,11 +1984,9 @@ proc isSimpleRepeatBody(node: Node): bool {.inline.} =
     return false
   if node.kind == nkCharType:
     return node.charType notin {ctGraphemeCluster, ctNewlineSeq}
-  node.kind in
-    {
-      nkLiteral, nkEscapedLiteral, nkString, nkCharClass, nkBackreference,
-      nkNamedBackref,
-    }
+  node.kind in {
+    nkLiteral, nkEscapedLiteral, nkString, nkCharClass, nkBackreference, nkNamedBackref
+  }
 
 proc reduceLeadingRepeat(node: Node): bool =
   ## Pin one leading repeat of a look-behind body to its lower bound.
