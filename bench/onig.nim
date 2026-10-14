@@ -160,6 +160,9 @@ proc search*(
   ## are written into `region` (`beg[i]` / `ends[i]`).
   let base = basePtr(subject)
   let subjectEnd = offsetPtr(base, subject.len)
-  onigSearch(
+  result = onigSearch(
     reg, base, subjectEnd, offsetPtr(base, start), subjectEnd, region, OnigOptionNone
   ).int
+
+  if result < OnigMismatch:
+    raise newException(OnigError, "onig_search failed with code " & $result)

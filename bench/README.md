@@ -13,7 +13,7 @@ one of two same-sized subjects:
 | File | What it measures |
 | --- | --- |
 | `bench_reni.nim` | reni alone: per-item wall time and throughput |
-| `bench_compare.nim` | reni vs. Oniguruma vs. PCRE2 (interpreted and JIT), in the same process |
+| `bench_compare.nim` | reni vs. nim-regex vs. Oniguruma vs. PCRE2 (interpreted and JIT), in the same process |
 | `bench_common.nim` | shared patterns, subject builder, timing and formatting |
 | `onig.nim` | minimal FFI bindings to libonig (benchmark-only) |
 | `pcre2.nim` | minimal FFI bindings to libpcre2-8 (benchmark-only) |
@@ -21,7 +21,21 @@ one of two same-sized subjects:
 
 ## Requirements
 
-`bench_compare` links against Oniguruma and PCRE2. Install both development
+The comparison's Nim dependencies live in `bench/benchmarks.nimble`, separately
+from the library's requirements. Install them with Atlas from this directory:
+
+```sh
+cd bench
+atlas --project:. init
+atlas install
+```
+
+This fetches nim-regex HEAD and unicodedb into `bench/deps` and generates
+`bench/nim.cfg`. To refresh HEAD later, run `atlas update regex`. Record the
+resolved commit in a captured run, or use `atlas pin` / `atlas rep` to reproduce
+a particular dependency checkout.
+
+`bench_compare` also links against Oniguruma and PCRE2. Install both development
 packages (`oniguruma` / `libonig-dev` and `pcre2` / `libpcre2-dev`) so that
 `pkg-config --libs oniguruma` / `pkg-config --libs libpcre2-8` and their headers
 resolve; the build falls back to `-lonig` / `-lpcre2-8` when `pkg-config` has no
@@ -34,12 +48,15 @@ Oniguruma) and its JIT (a different class entirely).
 
 ## Running
 
-```sh
-nim c -d:release --opt:speed --mm:orc bench/bench_reni.nim
-./bench/bench_reni [lines] [iterations] [--md]      # default: 5000 lines, 5 iterations
+After installing the benchmark dependencies, run from `bench/`:
 
-nim c -d:release --opt:speed --mm:orc bench/bench_compare.nim
-./bench/bench_compare [lines] [iterations] [--md]   # default: 5000 lines, 5 iterations
+```sh
+nim c -d:release --opt:speed --mm:orc bench_reni.nim
+./bench_reni [lines] [iterations] [--md]      # default: 5000 lines, 5 iterations
+
+nim c -d:release --opt:speed --mm:orc \
+  -d:nimRegexRevision="$(git -C deps/regex rev-parse HEAD)" bench_compare.nim
+./bench_compare [lines] [iterations] [--md]   # default: 5000 lines, 5 iterations
 ```
 
 `--md` prints the tables as Markdown instead of aligned text. Every run starts
@@ -47,28 +64,42 @@ with the engine versions, the machine, the build and the invocation, so a
 captured run stays self-describing:
 
 ```sh
-./bench/bench_compare 5000 7 --md > bench/RESULTS.md
+./bench_compare 5000 7 --md > RESULTS.md
 ```
 
 ## Methodology
 
-- Every engine is driven by the *same* `findAll` loop: search from `pos`, record
-  the match, advance to the match end (one code point on a zero-width match),
-  repeat. reni uses `searchIntoCtx` with a reused `MatchContext`; Oniguruma uses
-  `onig_search` with a reused `OnigRegion`; PCRE2 uses `pcre2_match` with a
-  reused match data block.
-- Patterns are compiled as UTF-8: `ONIG_SYNTAX_ONIGURUMA` for Oniguruma,
-  `PCRE2_UTF | PCRE2_UCP | PCRE2_MULTILINE` for PCRE2 so that `\w`, `\d`, `\b`
-  and `^` carry the same semantics in all three engines.
-- Before timing, the full match sequence of every engine is collected and
-  compared span by span against reni's. The `agree` column reports the result and
-  the first divergence is printed below the table — an item the engines disagree
-  on is not a meaningful timing comparison, so it is excluded from the summary
-  and its category is marked `*`.
+- Every engine finds all non-overlapping matches on the same subject. Reni
+  uses `MatchScanner` with a reused `MatchContext`; Oniguruma uses `onig_search`
+  with a reused `OnigRegion`; PCRE2 uses `pcre2_match` with reused match data.
+  nim-regex uses its capture-producing `findAll` iterator, which retains its
+  own scratch state during a scan. `findAllBounds` is deliberately excluded
+  because it disables captures.
+- Patterns use UTF-8: `ONIG_SYNTAX_ONIGURUMA` for Oniguruma,
+  `PCRE2_UTF | PCRE2_UCP | PCRE2_MULTILINE` for PCRE2, and `regexMultiline`
+  with nim-regex's default Unicode mode. nim-regex spells the named groups
+  `(?P<lhs>...)` / `(?P<rhs>...)`. PCRE2 uses `\p{sc=Han}+` for the workload's
+  `\p{Han}+`, matching Script rather than Script_Extensions. The latter also
+  matches punctuation in this corpus and would produce different spans.
+- Before timing, every engine's full matches and numbered captures are compared
+  span by span against Reni's. Ends are normalized to half-open byte offsets,
+  with unmatched captures kept distinct from empty ones. The `agree` column
+  reports agreement among supported engines and the first divergence appears
+  below the table.
+- Summary and category totals use only items supported by **all five** engines
+  with identical output. Partial category counts show comparable/total, so every
+  engine column still measures the same work. nim-regex HEAD currently rejects
+  the possessive quantifier, backreference, and Han script property: 26 of the
+  29 items are shared. The per-item table retains every engine's individual
+  timings and marks unsupported patterns `n/a`.
 - An engine that rejects a pattern outright shows `n/a`; reni hitting its step
   limit shows `limit`. Neither stops the rest of the run.
 - Each pattern is warmed up, then timed over N iterations; the table reports the
-  best sample (least noise), and `bench_reni` also reports the median.
+  best sample (least noise), and `bench_reni` also reports the median. Every
+  warmup and timed scan must return the validated match count; these assertions
+  execute outside the timed interval. Pattern compilation is excluded from
+  search measurements and has its own table. Compilation totals also use the
+  subset supported by all five engines.
 - Tables carry measured times only. Ratios are left to the reader: which
   baseline is meaningful depends on the question being asked, and the totals
   are dominated by the slowest pattern.
@@ -87,3 +118,17 @@ captured run stays self-describing:
 5. **Compile, per item** — pattern compilation cost (`re` vs. `onig_new` vs.
    `pcre2_compile`, with and without a JIT pass).
 6. **Patterns** — the regex behind each item, so the workload is inspectable.
+
+## Checking the harness
+
+The pure-Nim correctness helper tests run with the library's ordinary test
+suite, or individually from the repository root:
+
+```sh
+nim c -r tests/test_bench_common.nim
+```
+
+`Benchmark smoke tests` CI builds the comparison in release mode on Nim 2.0.16
+and stable, checks all supported outputs on a small corpus, and verifies that
+only the three documented nim-regex patterns are unavailable. It checks
+correctness and table coverage; timing thresholds are deliberately absent.

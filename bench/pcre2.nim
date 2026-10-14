@@ -82,6 +82,10 @@ proc pcre2GetOvectorPointer(
   importc: "pcre2_get_ovector_pointer_8", header: pcre2H
 .}
 
+proc pcre2GetOvectorCount(
+  data: Pcre2MatchData
+): cuint {.importc: "pcre2_get_ovector_count_8", header: pcre2H.}
+
 proc pcre2GetErrorMessage(
   errorcode: cint, buffer: ptr uint8, bufflen: Pcre2Size
 ): cint {.importc: "pcre2_get_error_message_8", header: pcre2H.}
@@ -150,7 +154,7 @@ proc match*(
   ## Match at or after byte offset `start`.  Returns the PCRE2 status code
   ## (> 0 on success, `Pcre2ErrorNoMatch` when there is no match); spans are
   ## read from the ovector.
-  pcre2Match(
+  result = pcre2Match(
     code,
     basePtr(subject),
     subject.len.Pcre2Size,
@@ -159,6 +163,12 @@ proc match*(
     data,
     nil,
   )
+
+  if result < Pcre2ErrorNoMatch or result == 0:
+    raise newException(Pcre2Error, "pcre2_match failed: " & errorMessage(result))
+
+proc ovectorCount*(data: Pcre2MatchData): int {.inline.} =
+  pcre2GetOvectorCount(data).int
 
 proc ovector*(data: Pcre2MatchData): ptr UncheckedArray[Pcre2Size] {.inline.} =
   pcre2GetOvectorPointer(data)
