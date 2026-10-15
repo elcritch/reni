@@ -97,6 +97,7 @@ type
     flags: RegexFlags
     captures: seq[Span]
     searchStart: int
+    matchOptions: MatchOptions
     keepStart: int
     regex: ptr Regex
       ## Borrowed for one matcher entry point, exactly like ``subject``:
@@ -1520,18 +1521,19 @@ proc anchorHolds(ctx: MatchContext, kind: AnchorKind): bool =
   ## belongs to the committing caller.
   case kind
   of akLineBegin:
-    ctx.pos == 0 or (ctx.pos > 0 and ctx.subject[ctx.pos - 1] == '\n')
+    ctx.pos == 0 or
+      (ctx.pos > 0 and ctx.pos < ctx.subject.len and ctx.subject[ctx.pos - 1] == '\n')
   of akLineEnd:
     ctx.pos >= ctx.anchorEnd or ctx.subject[ctx.pos] == '\n'
   of akStringBegin:
-    ctx.pos == 0
+    moNotBeginString notin ctx.matchOptions and ctx.pos == 0
   of akStringEnd:
     ctx.pos >= ctx.anchorEnd
   of akStringEndOrNewline:
     ctx.pos >= ctx.anchorEnd or
       (ctx.pos == ctx.anchorEnd - 1 and ctx.subject[ctx.pos] == '\n')
   of akSearchBegin:
-    ctx.pos == ctx.searchStart
+    moNotBeginPosition notin ctx.matchOptions and ctx.pos == ctx.searchStart
   of akKeep:
     true
   of akWordBoundary, akNotWordBoundary:
@@ -4837,6 +4839,7 @@ proc searchImplInto*(
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
     sameSubject: bool = false,
+    options: MatchOptions = {},
 ) =
   ## In-place variant of ``searchImpl``: writes into ``m``, reusing
   ## ``ctx``'s buffers and ``m.boundaries``' capacity across calls.
@@ -4861,6 +4864,7 @@ proc searchImplInto*(
   if rbValid and indexOfByte(subject, start, rbByte) < 0:
     noteScratchUsage(ctx)
     return
+  ctx.matchOptions = options
   resetForRegex(
     ctx, subject, unsafeAddr regex, stepLimit, maxRecursionDepth, sameSubject
   )
@@ -5169,6 +5173,7 @@ proc searchImpl*(
     start: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   let ctx = newMatchContext(regex.captureCount)
   searchImplInto(
@@ -5179,6 +5184,7 @@ proc searchImpl*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
 
 proc searchBackwardImplInto*(
@@ -5189,6 +5195,7 @@ proc searchBackwardImplInto*(
     start: int = -1,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ) =
   ## In-place variant of ``searchBackwardImpl``.  Reuses ``ctx``.
   defer:
@@ -5201,6 +5208,7 @@ proc searchBackwardImplInto*(
   if regex.requiredByte.valid and indexOfByte(subject, 0, regex.requiredByte.byte) < 0:
     noteScratchUsage(ctx)
     return
+  ctx.matchOptions = options
   resetForRegex(ctx, subject, unsafeAddr regex, stepLimit, maxRecursionDepth)
   let fc = regex.firstCharInfo
   var startPos =
@@ -5279,6 +5287,7 @@ proc searchBackwardImpl*(
     start: int = -1,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   ## Search backward: try starting positions from right to left,
   ## return the first (rightmost) forward match found.
@@ -5292,6 +5301,7 @@ proc searchBackwardImpl*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
 
 proc matchAtImplInto*(
@@ -5302,11 +5312,13 @@ proc matchAtImplInto*(
     pos: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ) =
   ## In-place variant of ``matchAtImpl``.  Reuses ``ctx``.
   defer:
     releaseBorrowed(ctx)
   writeNotFound(m)
+  ctx.matchOptions = options
   resetForRegex(ctx, subject, unsafeAddr regex, stepLimit, maxRecursionDepth)
   resetForPosition(ctx, pos, pos)
   if matchNode(ctx, regex.ast):
@@ -5322,6 +5334,7 @@ proc matchAtImpl*(
     pos: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   ## Try to match only at the given position (no scanning).
   let ctx = newMatchContext(regex.captureCount)
@@ -5333,4 +5346,5 @@ proc matchAtImpl*(
     pos = pos,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )

@@ -28,8 +28,16 @@ type
     rfAsciiPosix ## (?P)
     rfIgnoreCaseAscii ## (?I) - case-insensitive matching for ASCII only
     rfFindLongest ## (?L) - find longest match
+    rfCaptureGroup ## Keep numbered captures alongside named ones (compile option).
 
   RegexFlags* = set[RegexFlag]
+
+  MatchOption* = enum
+    moNotBeginString ## Disable ``\A`` for this call (ONIG_OPTION_NOT_BEGIN_STRING).
+    moNotBeginPosition ## Disable ``\G`` for this call (ONIG_OPTION_NOT_BEGIN_POSITION).
+
+  MatchOptions* = set[MatchOption]
+    ## Per-call options; independent of the immutable compiled pattern.
 
   QuantKind* = enum
     qkGreedy

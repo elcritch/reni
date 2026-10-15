@@ -51,6 +51,42 @@ assert captureText(m, "user", "user@host", r) == some("user")
 assert captureText(m, "host", "user@host", r) == some("host")
 ```
 
+By default, a pattern containing named groups captures only those groups and
+rejects numbered references, as Oniguruma does. TextMate uses
+`ONIG_OPTION_CAPTURE_GROUP` instead. Pass `rfCaptureGroup` to keep both kinds
+of captures in opening-parenthesis order and allow numbered backreferences,
+subexpression calls, and conditionals alongside named ones:
+
+```nim
+let r = re(r"(a)(?<name>b)\1\k<name>", {rfCaptureGroup})
+let m = search("abab", r)
+assert m.boundaries == @[span(0, 4), span(0, 1), span(1, 2)]
+assert captureIndex(r, "name") == 2
+```
+
+This is a compile option, with no inline flag spelling. Numeric references
+can address individual groups even when several groups share a name.
+
+### Per-call anchor options
+
+`search`, `searchBackward`, `matchAt`, and their `IntoCtx` variants accept
+`options: MatchOptions`. `moNotBeginString` disables `\A` and
+`moNotBeginPosition` disables `\G`, including inside lookarounds and
+subexpression calls. They correspond to Oniguruma's `NOT_BEGIN_STRING` and
+`NOT_BEGIN_POSITION` options. Line anchors and other alternatives remain
+available. Options apply only to the current call and reset when omitted.
+
+```nim
+let r = re(r"\Gx|y")
+assert search(">xy", r, start = 1).matchSpan == 1 .. 2
+assert search(">xy", r, start = 1,
+  options = {moNotBeginPosition}).matchSpan == 2 .. 3
+```
+
+This lets a line tokenizer share one compiled pattern across anchor modes.
+See [the TextMate benchmark](bench/README.md#textmate-captures-and-anchor-options)
+for a comparison with separately compiled variants.
+
 ### Match at position
 
 ```nim

@@ -12,6 +12,9 @@
 ## All matching procs accept ``stepLimit`` and ``maxRecursionDepth``
 ## parameters for ReDoS protection; out-of-range indices raise
 ## ``ValueError`` and invalid replacement references raise ``RegexError``.
+## ``search``, ``searchBackward``, ``matchAt`` and their ``IntoCtx`` variants
+## also take ``options: MatchOptions`` to disable ``\A`` / ``\G`` per call
+## without recompiling the pattern; omitted options enable both anchors.
 
 import std/options
 
@@ -27,6 +30,7 @@ proc searchIntoCtx*(
     start: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): bool {.discardable.} =
   ## Allocation-reusing search.  Writes the result into ``m`` and reuses
   ## ``ctx``'s scratch buffers, so after the first call the matcher itself
@@ -43,6 +47,7 @@ proc searchIntoCtx*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
   m.found
 
@@ -54,6 +59,7 @@ proc searchBackwardIntoCtx*(
     start: int = -1,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): bool {.discardable.} =
   ## In-place variant of ``searchBackward``.  See ``searchIntoCtx`` for
   ## the allocation-reuse contract.
@@ -70,6 +76,7 @@ proc searchBackwardIntoCtx*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
   m.found
 
@@ -81,6 +88,7 @@ proc matchAtIntoCtx*(
     pos: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): bool {.discardable.} =
   ## In-place variant of ``matchAt``.  See ``searchIntoCtx`` for the
   ## allocation-reuse contract.
@@ -94,6 +102,7 @@ proc matchAtIntoCtx*(
     pos = pos,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
   m.found
 
@@ -103,6 +112,7 @@ proc search*(
     start: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   if start < 0 or start > subject.len:
     raise newException(ValueError, "start index out of range: " & $start)
@@ -112,6 +122,7 @@ proc search*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
 
 proc searchBackward*(
@@ -120,6 +131,7 @@ proc searchBackward*(
     start: int = -1,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   ## Search backward from the end (or from `start` if >= 0).
   ##
@@ -133,6 +145,7 @@ proc searchBackward*(
     start = start,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
 
 proc matchAt*(
@@ -141,6 +154,7 @@ proc matchAt*(
     pos: int = 0,
     stepLimit: int = DefaultStepLimit,
     maxRecursionDepth: int = DefaultMaxRecursionDepth,
+    options: MatchOptions = {},
 ): Match =
   ## Try to match only at the given position (no forward scanning).
   if pos < 0 or pos > subject.len:
@@ -151,6 +165,7 @@ proc matchAt*(
     pos = pos,
     stepLimit = stepLimit,
     maxRecursionDepth = maxRecursionDepth,
+    options = options,
   )
 
 proc matchSpan*(m: Match): Span {.inline.} =
