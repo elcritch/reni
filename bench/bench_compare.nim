@@ -1,11 +1,10 @@
-## Head-to-head benchmark: reni vs. the Oniguruma C library, with PCRE2
+## Head-to-head benchmark: reni vs. nim-regex and Oniguruma, with PCRE2
 ## (interpreted and JIT) as a calibration point.
 ##
 ## All engines run the same patterns over the same subject inside the same
-## process, driven by identical findAll-style loops, so the numbers differ
-## only by engine.  Match sequences are compared against reni's before
-## timing; an engine that disagrees on a pattern is flagged, since its
-## timing would not be measuring the same work.
+## process, using capture-producing findAll APIs. Full matches and captures
+## are compared against reni's before timing. An engine that disagrees on a
+## pattern is flagged, since its timing would not measure the same work.
 ##
 ## Run with:
 ##   nim c -d:release --opt:speed --mm:orc bench/bench_compare.nim
@@ -16,6 +15,7 @@
 import std/[strformat, strutils]
 
 import ../reni
+from pkg/regex as nimregex import nil
 import bench_common
 import onig
 import pcre2
@@ -23,14 +23,14 @@ import pcre2
 type
   Engine = enum
     eReni = "reni"
+    eNimRegex = "nim-regex"
     eOnig = "onig"
     ePcre2 = "pcre2"
     ePcre2Jit = "pcre2-jit"
 
-  Span = tuple[a, b: int]
-
   Compiled = object
     reni: Regex
+    nimRegex: nimregex.Regex2
     onig: onig.OnigRegex
     pcre2: pcre2.Pcre2Code
     pcre2Jit: pcre2.Pcre2Code
@@ -40,7 +40,9 @@ type
     region: ptr onig.OnigRegion
     data: pcre2.Pcre2MatchData
 
-const TimeCol = 11
+const
+  TimeCol = 11
+  NimRegexRevision {.strdefine.} = "unrecorded"
 
 # ---------------------------------------------------------------- match loops
 #
@@ -64,22 +66,28 @@ proc advanceOvector(subject: string, mStart, mEnd: int): int {.inline.} =
   else:
     mEnd
 
-proc collectReni(ctx: MatchContext, subject: string, regex: Regex): seq[Span] =
+proc collectReni(ctx: MatchContext, subject: string, regex: Regex): seq[MatchSpans] =
   var sc = initMatchScanner(subject)
   var m: Match
   while scanNext(sc, ctx, subject, regex, m):
-    result.add (m.boundaries[0].a, m.boundaries[0].b)
+    var captures: MatchSpans
+    for span in m.boundaries:
+      captures.add normalizeSpan(span.a, span.b)
+    result.add captures
 
 proc collectOnig(
     reg: onig.OnigRegex, subject: string, region: ptr onig.OnigRegion
-): seq[Span] =
+): seq[MatchSpans] =
   var pos = 0
   while pos <= subject.len:
-    if onig.search(reg, subject, region, pos) < 0:
+    if onig.checkedSearch(reg, subject, region, pos) < 0:
       break
     let mStart = region.beg[0].int
     let mEnd = region.ends[0].int
-    result.add (mStart, mEnd)
+    var captures: MatchSpans
+    for group in 0 ..< region.numRegs.int:
+      captures.add normalizeSpan(region.beg[group].int, region.ends[group].int)
+    result.add captures
     let nextPos = advanceOvector(subject, mStart, mEnd)
     if nextPos < 0:
       break
@@ -87,15 +95,22 @@ proc collectOnig(
 
 proc collectPcre2(
     code: pcre2.Pcre2Code, subject: string, data: pcre2.Pcre2MatchData
-): seq[Span] =
+): seq[MatchSpans] =
   var pos = 0
   while pos <= subject.len:
-    if pcre2.match(code, subject, data, pos) <= 0:
+    let rc = pcre2.checkedMatch(code, subject, data, pos)
+    if rc < 0:
       break
     let ov = pcre2.ovector(data)
     let mStart = ov[0].int
     let mEnd = ov[1].int
-    result.add (mStart, mEnd)
+    var captures: MatchSpans
+    for group in 0 ..< pcre2.ovectorCount(data):
+      if group >= rc.int or ov[2 * group] == csize_t.high:
+        captures.add (-1, -1)
+      else:
+        captures.add normalizeSpan(ov[2 * group].int, ov[2 * group + 1].int)
+    result.add captures
     let nextPos = advanceOvector(subject, mStart, mEnd)
     if nextPos < 0:
       break
@@ -110,7 +125,7 @@ proc countReni(ctx: MatchContext, subject: string, regex: Regex): int =
 proc countOnig(reg: onig.OnigRegex, subject: string, region: ptr onig.OnigRegion): int =
   var pos = 0
   while pos <= subject.len:
-    if onig.search(reg, subject, region, pos) < 0:
+    if onig.checkedSearch(reg, subject, region, pos) < 0:
       break
     inc result
     let nextPos = advanceOvector(subject, region.beg[0].int, region.ends[0].int)
@@ -123,7 +138,7 @@ proc countPcre2(
 ): int =
   var pos = 0
   while pos <= subject.len:
-    if pcre2.match(code, subject, data, pos) <= 0:
+    if pcre2.checkedMatch(code, subject, data, pos) <= 0:
       break
     inc result
     let nextPos =
@@ -134,14 +149,25 @@ proc countPcre2(
 
 # -------------------------------------------------------------------- helpers
 
-proc diffSummary(reference, other: seq[Span]): string =
-  ## "", or a short description of the first divergence from `reference`.
-  if reference == other:
-    return ""
-  for i in 0 ..< min(reference.len, other.len):
-    if reference[i] != other[i]:
-      return fmt"#{i} {reference[i].a}-{reference[i].b} vs {other[i].a}-{other[i].b}"
-  fmt"count {reference.len} vs {other.len}"
+proc nimRegexPattern(pattern: string): string =
+  # This workload names lhs/rhs. Leave lookbehind's (?<= / (?<! unchanged.
+  pattern.replace("(?<lhs>", "(?P<lhs>").replace("(?<rhs>", "(?P<rhs>")
+
+proc pcre2Pattern(pattern: string): string =
+  # Bare Han selects Script_Extensions in PCRE2; Reni/Oniguruma use Script.
+  if pattern == r"\p{Han}+": r"\p{sc=Han}+" else: pattern
+
+proc collectNimRegex(subject: string, regex: nimregex.Regex2): seq[MatchSpans] =
+  for m in nimregex.findAll(subject, regex):
+    var captures = @[normalizeSpan(m.boundaries.a, m.boundaries.b + 1)]
+    for span in m.captures:
+      captures.add normalizeSpan(span.a, span.b + 1)
+    result.add captures
+
+proc countNimRegex(subject: string, regex: nimregex.Regex2): int =
+  # The capture-producing iterator reuses its own scratch state for the scan.
+  for m in nimregex.findAll(subject, regex):
+    inc result
 
 proc engineColumns(width = TimeCol): seq[(string, int)] =
   for e in Engine:
@@ -179,14 +205,19 @@ proc runItem(
   except CatchableError:
     result.status[eReni] = stUnsupported
   try:
+    c.nimRegex = nimregex.re2(nimRegexPattern(b.pattern), {nimregex.regexMultiline})
+    have[eNimRegex] = true
+  except nimregex.RegexError:
+    result.status[eNimRegex] = stUnsupported
+  try:
     c.onig = onig.compile(b.pattern)
     have[eOnig] = true
   except onig.OnigError:
     result.status[eOnig] = stUnsupported
   try:
-    c.pcre2 = pcre2.compile(b.pattern, jit = false)
+    c.pcre2 = pcre2.compile(pcre2Pattern(b.pattern), jit = false)
     have[ePcre2] = true
-    c.pcre2Jit = pcre2.compile(b.pattern, jit = true)
+    c.pcre2Jit = pcre2.compile(pcre2Pattern(b.pattern), jit = true)
     have[ePcre2Jit] = true
   except pcre2.Pcre2Error:
     if not have[ePcre2]:
@@ -209,13 +240,15 @@ proc runItem(
 
   # Match sequences first: timing an engine that computes something else
   # would be meaningless.
-  var spans: array[Engine, seq[Span]]
+  var spans: array[Engine, seq[MatchSpans]]
   if have[eReni]:
     try:
       spans[eReni] = collectReni(scratch.ctx, subject, c.reni)
     except RegexError:
       have[eReni] = false
       result.status[eReni] = stLimit
+  if have[eNimRegex]:
+    spans[eNimRegex] = collectNimRegex(subject, c.nimRegex)
   if have[eOnig]:
     spans[eOnig] = collectOnig(c.onig, subject, scratch.region)
   if have[ePcre2]:
@@ -249,6 +282,15 @@ proc runItem(
           iters,
           proc(): int =
             countReni(scratch.ctx, subject, c.reni),
+          expectedMatches = spans[e].len,
+        ).best
+      of eNimRegex:
+        measure(
+          warmup,
+          iters,
+          proc(): int =
+            countNimRegex(subject, c.nimRegex),
+          expectedMatches = spans[e].len,
         ).best
       of eOnig:
         measure(
@@ -256,6 +298,7 @@ proc runItem(
           iters,
           proc(): int =
             countOnig(c.onig, subject, scratch.region),
+          expectedMatches = spans[e].len,
         ).best
       of ePcre2:
         measure(
@@ -263,6 +306,7 @@ proc runItem(
           iters,
           proc(): int =
             countPcre2(c.pcre2, subject, scratch.data),
+          expectedMatches = spans[e].len,
         ).best
       of ePcre2Jit:
         measure(
@@ -270,6 +314,7 @@ proc runItem(
           iters,
           proc(): int =
             countPcre2(c.pcre2Jit, subject, scratch.data),
+          expectedMatches = spans[e].len,
         ).best
 
   result.comparable = result.agree.len == 0
@@ -340,23 +385,28 @@ proc printByCategory(results: seq[ItemResult], markdown: bool) =
     var
       total: array[Engine, int64]
       items = 0
-      partial = false
+      included = 0
     for r in results:
       if r.bench.category != category:
         continue
       inc items
       if not r.comparable:
-        partial = true
         continue
+      inc included
       for e in Engine:
         total[e] += r.time[e]
-    var cells = @[category, (if partial: $items & "*" else: $items)]
+    let itemCount =
+      if included == items:
+        $items
+      else:
+        $included & "/" & $items
+    var cells = @[category, itemCount]
     for e in Engine:
       cells.add fmtMs(total[e])
     table.row(cells)
   echo ""
-  echo "`*` — the category holds an item the engines disagree on; it is left " &
-    "out of these totals."
+  echo "Item counts give comparable/total when any pattern is unsupported or " &
+    "disagrees. Every engine column sums the same comparable items."
 
 proc printItems(results: seq[ItemResult], iters: int, markdown: bool) =
   echo ""
@@ -397,8 +447,10 @@ proc benchCompile(iters: int, markdown: bool) =
   let table = initTableWriter(cols, markdown)
 
   var total: array[Engine, int64]
+  var comparable = 0
   for b in Benchmarks:
     let pattern = b.pattern
+    let pcrePattern = pcre2Pattern(pattern)
     var best: array[Engine, int64]
     for e in Engine:
       best[e] = -1
@@ -414,6 +466,20 @@ proc benchCompile(iters: int, markdown: bool) =
           iters,
       ).best
     except CatchableError:
+      discard
+
+    var nimRegexBox = newSeq[nimregex.Regex2](iters)
+    let nimPattern = nimRegexPattern(pattern)
+    try:
+      best[eNimRegex] = measure(
+        1,
+        5,
+        proc(): int =
+          for i in 0 ..< iters:
+            nimRegexBox[i] = nimregex.re2(nimPattern, {nimregex.regexMultiline})
+          iters,
+      ).best
+    except nimregex.RegexError:
       discard
 
     var onigBox = newSeq[onig.OnigRegex](iters)
@@ -433,14 +499,15 @@ proc benchCompile(iters: int, markdown: bool) =
 
     var pcreBox = newSeq[pcre2.Pcre2Code](iters)
     for jit in [false, true]:
-      let e = if jit: ePcre2Jit else: ePcre2
+      let jitEnabled = jit
+      let e = if jitEnabled: ePcre2Jit else: ePcre2
       try:
         best[e] = measure(
           1,
           5,
           proc(): int =
             for i in 0 ..< iters:
-              pcreBox[i] = pcre2.compile(pattern, jit = jit)
+              pcreBox[i] = pcre2.compile(pcrePattern, jit = jitEnabled)
             for i in 0 ..< iters:
               pcre2.free(pcreBox[i])
             iters,
@@ -448,16 +515,23 @@ proc benchCompile(iters: int, markdown: bool) =
       except pcre2.Pcre2Error:
         discard
 
+    var shared = true
+    for e in Engine:
+      if best[e] < 0:
+        shared = false
+    if shared:
+      inc comparable
+      for e in Engine:
+        total[e] += best[e]
     var cells = @[b.category, b.label]
     for e in Engine:
       if best[e] >= 0:
-        total[e] += best[e]
         cells.add fmtUs(best[e] div iters)
       else:
         cells.add $stUnsupported
     table.row(cells)
 
-  var cells = @["TOTAL", ""]
+  var cells = @["TOTAL", $comparable & " shared items"]
   for e in Engine:
     cells.add fmtUs(total[e] div iters)
   table.row(cells)
@@ -482,7 +556,7 @@ proc main() =
   let corpora = subjects(lineCount)
   let jitState = if pcre2.jitAvailable(): "available" else: "unavailable"
 
-  echo fmt"# reni vs Oniguruma {onig.onigVersionString()} vs PCRE2"
+  echo fmt"# reni vs nim-regex {NimRegexRevision} vs Oniguruma {onig.onigVersionString()} vs PCRE2"
   echo ""
   echo fmt"{Benchmarks.len} benchmark items across " &
     "literals, character classes, alternation, quantifiers, anchors, captures, " &
@@ -491,13 +565,15 @@ proc main() =
     fmt"{lineCount} lines of synthetic Nim source, `text` is UTF-8 " &
     "Japanese/ASCII prose of the same size. Best of " & $iters & " runs."
   echo ""
-  echo "Same subject, same match loop, same process. UTF-8 throughout: " &
+  echo "Same subjects and non-overlapping matching semantics, same process. UTF-8 throughout: " &
     "`ONIG_SYNTAX_ONIGURUMA` for Oniguruma, " &
     "`PCRE2_UTF | PCRE2_UCP | PCRE2_MULTILINE` for PCRE2 " &
     fmt"(JIT {jitState}), so `\w`, `\d`, `\b` and `^` mean the same thing " &
-    "everywhere. The `agree` column checks that: every engine must return the " &
-    "identical match sequence, and only items where all four agree feed the " &
-    "summary."
+    "in these corpora. nim-regex uses `re2` with `regexMultiline` and its " &
+    "capture-producing `findAll` iterator. Its named groups use `(?P<name>...)`; " &
+    "PCRE2 uses `\\p{sc=Han}` for Reni/Oniguruma script semantics. " &
+    "The `agree` column compares every full-match and capture span; only " &
+    "supported items where all five agree feed the summary and category totals."
   echo ""
   echo environmentNote()
 

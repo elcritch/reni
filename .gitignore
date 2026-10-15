@@ -23,3 +23,11 @@ nimble.develop
 nimble.paths
 nimbledeps
 /config.nims
+
+# Atlas dependency state and benchmark executables.
+/deps/
+/nim.cfg
+/bench/deps/
+/bench/nim.cfg
+/bench/atlas.lock
+/bench/test_bindings

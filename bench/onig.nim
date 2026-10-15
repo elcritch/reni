@@ -156,10 +156,18 @@ proc search*(
     reg: OnigRegex, subject: string, region: ptr OnigRegion, start: int = 0
 ): int {.inline.} =
   ## Forward search from byte offset `start`.  Returns the match start
-  ## offset, or `OnigMismatch` (-1) when there is no match.  Capture spans
+  ## offset, `OnigMismatch` (-1), or a negative runtime error code. Capture spans
   ## are written into `region` (`beg[i]` / `ends[i]`).
   let base = basePtr(subject)
   let subjectEnd = offsetPtr(base, subject.len)
-  onigSearch(
+  result = onigSearch(
     reg, base, subjectEnd, offsetPtr(base, start), subjectEnd, region, OnigOptionNone
   ).int
+
+proc checkedSearch*(
+    reg: OnigRegex, subject: string, region: ptr OnigRegion, start: int = 0
+): int {.inline.} =
+  ## Benchmark convenience: preserve no-match, but fail on runtime errors.
+  result = search(reg, subject, region, start)
+  if result < OnigMismatch:
+    raise newException(OnigError, "onig_search failed with code " & $result)

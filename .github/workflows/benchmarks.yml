@@ -1,0 +1,79 @@
+name: Benchmark smoke tests
+
+on:
+  pull_request:
+    paths:
+      - '.github/workflows/benchmarks.yml'
+      - 'bench/**'
+      - 'reni.nim'
+      - 'reni/**'
+      - 'tests/test_bench_common.nim'
+
+permissions:
+  contents: read
+
+jobs:
+  compare:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    strategy:
+      matrix:
+        nim-version: ['2.0.16', 'stable']
+    steps:
+      - uses: actions/checkout@v6
+      - name: Set up Nim for Atlas
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: '2.2.12'
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install C reference engines
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pkg-config libonig-dev libpcre2-dev
+          pkg-config --modversion oniguruma libpcre2-8
+      - name: Bootstrap Atlas with Nim 2.2.12
+        run: nimble install -y atlas@0.16.3
+      - name: Set up the benchmark compiler
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ matrix.nim-version }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
+      - name: Install benchmark dependencies with Atlas
+        working-directory: bench
+        run: |
+          atlas --project:. init
+          atlas --noexec install
+          printf 'NIM_REGEX_REVISION=%s\n' "$(git -C deps/regex rev-parse HEAD)" >> "$GITHUB_ENV"
+      - name: Check correctness helpers
+        run: |
+          nim c -r tests/test_bench_common.nim
+          nim c -r bench/test_bindings.nim
+      - name: Build comparison in release mode
+        working-directory: bench
+        run: nim c -d:release --opt:speed --mm:orc -d:nimRegexRevision="$NIM_REGEX_REVISION" bench_compare.nim
+      - name: Check the shared workload and unsupported cases
+        working-directory: bench
+        run: |
+          ./bench_compare 100 1 --md > /tmp/bench-results.md
+          python3 - <<'PY'
+          from pathlib import Path
+
+          output = Path("/tmp/bench-results.md").read_text()
+          print(output)
+          items = output.split("## Per item", 1)[1].split("## Compile,", 1)[0]
+          rows = [[cell.strip() for cell in line.split("|")[1:-1]]
+                  for line in items.splitlines() if line.startswith("| ")][2:]
+          assert len(rows) == 29
+          unsupported = {("quantifier", "possessive"), ("capture", "backreference"),
+                         ("unicode", "script")}
+          shared = 0
+          for row in rows:
+              assert row[-1] == "yes", row
+              assert all(row[column] not in {"n/a", "limit"} for column in (3, 5, 6, 7)), row
+              if row[4] == "n/a":
+                  assert (row[0], row[1]) in unsupported, row
+              else:
+                  shared += 1
+          assert f"Summary ({shared} of 29 items comparable across all engines)" in output
+          assert f"| TOTAL | {shared} shared items |" in output
+          PY

@@ -6,6 +6,7 @@ on:
       - '.github/workflows/nph.yml'
       - 'reni.nim*'
       - 'reni/**'
+      - 'bench/**'
       - 'tests/**'
 
 jobs:

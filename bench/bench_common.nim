@@ -15,6 +15,8 @@ type
     cText = "text" ## mixed Japanese / ASCII prose, UTF-8 multibyte
 
   Bench* = tuple[category, label: string, corpus: Corpus, pattern: string]
+  Span* = tuple[a, b: int] ## Half-open UTF-8 byte span; (-1, -1) is unmatched.
+  MatchSpans* = seq[Span] ## Full match followed by each numbered capture.
 
 const Benchmarks*: array[29, Bench] = [
   # Plain literals: what a prefilter / first-byte scan can skip over.
@@ -112,10 +114,37 @@ proc subjects*(lineCount: int): array[Corpus, string] =
   result[cCode] = buildCodeSubject(lineCount)
   result[cText] = buildTextSubject(result[cCode].len)
 
-proc measure*(warmup, iters: int, run: proc(): int): Timing =
-  ## Run `run` `warmup` + `iters` times and keep the best/median wall time.
+proc normalizeSpan*(a, b: int): Span =
+  ## Normalize the different engines' unmatched-capture sentinels.
+  if a < 0:
+    (-1, -1)
+  else:
+    (a, b)
+
+proc diffSummary*(reference, other: seq[MatchSpans]): string =
+  ## First differing match/capture, or an empty string when both sequences agree.
+  if reference == other:
+    return ""
+  for i in 0 ..< min(reference.len, other.len):
+    for group in 0 ..< min(reference[i].len, other[i].len):
+      if reference[i][group] != other[i][group]:
+        let a = reference[i][group]
+        let b = other[i][group]
+        return fmt"match #{i}, group #{group}: {a.a}-{a.b} vs {b.a}-{b.b}"
+    if reference[i].len != other[i].len:
+      return fmt"match #{i}: {reference[i].len} vs {other[i].len} capture slots"
+  fmt"match count {reference.len} vs {other.len}"
+
+proc measure*(warmup, iters: int, run: proc(): int, expectedMatches = -1): Timing =
+  ## Validate every scan outside the timed interval, including warmups.
+  ## Without an explicit expected count, use the first scan as the reference.
+  doAssert warmup >= 0 and iters > 0
+  var expected = expectedMatches
   for _ in 0 ..< warmup:
-    discard run()
+    let matches = run()
+    if expected < 0:
+      expected = matches
+    doAssert matches == expected, "match count changed during warmup"
 
   var samples = newSeq[int64](iters)
   for it in 0 ..< iters:
@@ -123,8 +152,10 @@ proc measure*(warmup, iters: int, run: proc(): int): Timing =
     result.matches = run()
     let t1 = getMonoTime()
     samples[it] = inNanoseconds(t1 - t0)
+    if expected < 0:
+      expected = result.matches
+    doAssert result.matches == expected, "match count differs from validated results"
   samples.sort()
-
   result.best = samples[0]
   result.median = samples[samples.len div 2]
 
