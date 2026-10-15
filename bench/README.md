@@ -126,9 +126,16 @@ suite, or individually from the repository root:
 
 ```sh
 nim c -r tests/test_bench_common.nim
+# Requires the C reference libraries:
+nim c -r bench/test_bindings.nim
 ```
 
 `Benchmark smoke tests` CI builds the comparison in release mode on Nim 2.0.16
 and stable, checks all supported outputs on a small corpus, and verifies that
-only the three documented nim-regex patterns are unavailable. It checks
+only the three documented nim-regex patterns are unavailable. Raw C bindings
+retain runtime error codes for the differential fuzzer; the benchmark uses
+`checkedSearch` / `checkedMatch` wrappers to raise on errors. Binding regression
+tests cover this distinction and preserve ordinary no-match behavior. CI builds
+Atlas 0.16.3 with Nim 2.2.12 before selecting the benchmark compiler, so Atlas's
+compiler requirements do not prevent the Nim 2.0.16 comparison. It checks
 correctness and table coverage; timing thresholds are deliberately absent.

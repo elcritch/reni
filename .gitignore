@@ -30,3 +30,4 @@ nimbledeps
 /bench/deps/
 /bench/nim.cfg
 /bench/atlas.lock
+/bench/test_bindings

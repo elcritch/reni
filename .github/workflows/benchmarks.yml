@@ -21,17 +21,23 @@ jobs:
         nim-version: ['2.0.16', 'stable']
     steps:
       - uses: actions/checkout@v6
-      - uses: jiro4989/setup-nim-action@v2
+      - name: Set up Nim for Atlas
+        uses: jiro4989/setup-nim-action@v2
         with:
-          nim-version: ${{ matrix.nim-version }}
+          nim-version: '2.2.12'
           repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install C reference engines
         run: |
           sudo apt-get update
           sudo apt-get install -y pkg-config libonig-dev libpcre2-dev
           pkg-config --modversion oniguruma libpcre2-8
-      - name: Bootstrap Atlas
-        run: nimble install -y atlas
+      - name: Bootstrap Atlas with Nim 2.2.12
+        run: nimble install -y atlas@0.16.3
+      - name: Set up the benchmark compiler
+        uses: jiro4989/setup-nim-action@v2
+        with:
+          nim-version: ${{ matrix.nim-version }}
+          repo-token: ${{ secrets.GITHUB_TOKEN }}
       - name: Install benchmark dependencies with Atlas
         working-directory: bench
         run: |
@@ -39,7 +45,9 @@ jobs:
           atlas --noexec install
           printf 'NIM_REGEX_REVISION=%s\n' "$(git -C deps/regex rev-parse HEAD)" >> "$GITHUB_ENV"
       - name: Check correctness helpers
-        run: nim c -r tests/test_bench_common.nim
+        run: |
+          nim c -r tests/test_bench_common.nim
+          nim c -r bench/test_bindings.nim
       - name: Build comparison in release mode
         working-directory: bench
         run: nim c -d:release --opt:speed --mm:orc -d:nimRegexRevision="$NIM_REGEX_REVISION" bench_compare.nim

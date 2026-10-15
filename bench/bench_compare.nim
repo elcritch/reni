@@ -80,7 +80,7 @@ proc collectOnig(
 ): seq[MatchSpans] =
   var pos = 0
   while pos <= subject.len:
-    if onig.search(reg, subject, region, pos) < 0:
+    if onig.checkedSearch(reg, subject, region, pos) < 0:
       break
     let mStart = region.beg[0].int
     let mEnd = region.ends[0].int
@@ -98,7 +98,7 @@ proc collectPcre2(
 ): seq[MatchSpans] =
   var pos = 0
   while pos <= subject.len:
-    let rc = pcre2.match(code, subject, data, pos)
+    let rc = pcre2.checkedMatch(code, subject, data, pos)
     if rc < 0:
       break
     let ov = pcre2.ovector(data)
@@ -125,7 +125,7 @@ proc countReni(ctx: MatchContext, subject: string, regex: Regex): int =
 proc countOnig(reg: onig.OnigRegex, subject: string, region: ptr onig.OnigRegion): int =
   var pos = 0
   while pos <= subject.len:
-    if onig.search(reg, subject, region, pos) < 0:
+    if onig.checkedSearch(reg, subject, region, pos) < 0:
       break
     inc result
     let nextPos = advanceOvector(subject, region.beg[0].int, region.ends[0].int)
@@ -138,7 +138,7 @@ proc countPcre2(
 ): int =
   var pos = 0
   while pos <= subject.len:
-    if pcre2.match(code, subject, data, pos) <= 0:
+    if pcre2.checkedMatch(code, subject, data, pos) <= 0:
       break
     inc result
     let nextPos =
