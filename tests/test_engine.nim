@@ -8,9 +8,9 @@ import ./helpers
 
 # What a pattern answers; the invariants behind it are in
 # ``test_engine_internals.nim`` and what the compiler's rewriting passes
-# leave behind is in ``test_engine_passes.nim``.  Keep the three apart:
-# ``refc`` allows 3500 module-level globals and a ``unittest`` body is
-# module-level.
+# leave behind is in ``test_engine_passes.nim``; subroutine calls and
+# recursion are in ``test_recursion.nim``.  Keep them apart: ``refc`` allows
+# 3500 module-level globals and a ``unittest`` body is module-level.
 
 suite "Step 1: Literal matching":
   test "empty pattern matches empty string":
@@ -1461,87 +1461,6 @@ suite "Conditionals":
       expect(RegexError):
         discard re(pattern)
     discard re("(?(?{x})b|c)")
-
-suite "Subroutine calls and recursion":
-  test "numeric call (?1)":
-    let m = search("aa", re("(a)(?1)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 2
-
-  test "call re-evaluates body, not backref":
-    let m = search("aab", re("([abc])\\1(?1)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 3
-
-  test "call second group (?2)":
-    let m = search("aba", re("(a)(b)(?1)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 3
-
-  test "named call (?&name)":
-    let m = search("42", re("(?<d>[0-9])(?&d)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 2
-
-  test "named call triple":
-    let m = search("789", re("(?<d>[0-9])(?&d)(?&d)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 3
-
-  test "simple recursion a(?R)?b":
-    let m = search("aabb", re("a(?R)?b"))
-    check m.found
-    check m.boundaries[0] == 0 .. 4
-
-  test "whole pattern recursion balanced parens":
-    let m = search("(a(b)c)", re("\\((?:[^()]*|(?R))*\\)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 7
-
-  test "deep recursion balanced parens":
-    let m = search("(a(b(c)d)e)", re("\\((?:[^()]*|(?R))*\\)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 11
-
-  test "relative call (?-1)":
-    let m = search("aa", re("(a)(?-1)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 2
-
-  test "relative call (?-1) two groups":
-    let m = search("abb", re("(a)(b)(?-1)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 3
-
-  test "Python (?P>name)":
-    let m = search("ab", re("(?P<L>[a-z])(?P>L)"))
-    check m.found
-    check m.boundaries[0] == 0 .. 2
-
-  test "recursion depth limit does not crash":
-    let s = "a".repeat(60)
-    # Each subject character costs about one ``matchNodeRecursive`` level,
-    # and ``maxRecursionDepth`` (default 50) caps the subroutine nesting, so
-    # this stays near ~50 delegation levels: inside the byte budget in both
-    # exception models, and the partial match the depth cap bounds is the
-    # answer. Under a small ``-d:reniMaxStackBytes`` the same shape is what
-    # the budget guard turns into RegexLimitError. A segfault is neither.
-    when compileOption("exceptions", "setjmp") or engine.MaxStackBytes <= 64 * 1024:
-      try:
-        check search(s, re("(a(?1)?)")).found
-      except RegexLimitError:
-        discard
-    else:
-      check search(s, re("(a(?1)?)")).found
-
-  test "maxRecursionDepth bounds recursion before the call depth guard does":
-    # The public maxRecursionDepth is only meaningful if it is reachable: the
-    # call depth guard must not fire first and turn a bounded partial match
-    # into an error. Subroutine calls hold no native frame per level, so 40
-    # characters fit every budget on every build and the depth cap answers.
-    let m = search("a".repeat(40), re("(a(?1)?)"), maxRecursionDepth = 50)
-    check m.found
-    check m.matchSpan == Span(a: 0, b: 40)
 
 suite "Absent operator":
   test "abFunction (?~) has an empty pattern and matches empty":
@@ -4255,70 +4174,6 @@ suite "replace invalid reference":
 
   test "valid named reference still works":
     check replace("abc", re("(?<n>\\w+)"), "[${n}]") == "[abc]"
-
-suite "Mutual recursion detection":
-  test "direct self-recursion (?<a>(?&a)) detected":
-    expect RegexError:
-      discard re("(?<a>(?&a))")
-
-  test "mutual 2-cycle (?<a>(?&b))(?<b>(?&a)) detected":
-    expect RegexError:
-      discard re("(?<a>(?&b))(?<b>(?&a))")
-
-  test "mutual 3-cycle a→b→c→a detected":
-    expect RegexError:
-      discard re("(?<a>(?&b))(?<b>(?&c))(?<c>(?&a))")
-
-  test "self-recursion with consumption is valid":
-    let r = re("(?<a>x(?&a)?)")
-    check r.captureCount == 1
-
-  test "mutual recursion with consumption is valid":
-    let r = re("(?<a>x(?&b)?)(?<b>y(?&a)?)")
-    check r.captureCount == 2
-
-  test "mutual recursion via optional quantifier is valid":
-    let r = re("(?<a>(?&b)?x)(?<b>(?&a)?y)")
-    check r.captureCount == 2
-
-  test "self-recursion under an inverted range is valid":
-    # ``{2,0}`` behaves like ``{0,2}``, so the body may be skipped and the
-    # call is not forced without consuming input.
-    let r = re("(?<a>(?&a){2,0})")
-    check r.captureCount == 1
-
-  test "recursion after an inverted range is detected":
-    # ``b{2,0}`` can match empty, so the call is reachable without consuming
-    # input.
-    expect RegexError:
-      discard re("(?<a>b{2,0}(?&a))")
-
-  test "recursion after an inverted range is detected before a consumer":
-    expect RegexError:
-      discard re("(?<a>b{2,0}(?&a)c)")
-
-  test "recursion in a pattern condition detected":
-    # The condition runs before either branch.  Oniguruma: -221.
-    expect RegexError:
-      discard re("(?<n>(?(\\g<n>)a|b))")
-    check search("b", re("(?<n>(?(x\\g<n>)a|b))")).matchSpan == 0 .. 1
-
-  test "a call that consumes keeps a conditional's branch off the start":
-    # ``\\g<m>`` consumes ``x``, so the no branch calls ``n`` past it, as
-    # Oniguruma reads it too.
-    check not search("xb", re("(?<n>(?(a)b|\\g<m>\\g<n>))(?<m>x)")).found
-
-  test "recursion behind a conditional with no else branch detected":
-    # /(?(<a>)x)/ matches empty when the condition is false, so \g<a> is
-    # reachable without consuming input.  Oniguruma rejects this pattern with
-    # ONIGERR_NEVER_ENDING_RECURSION.
-    expect RegexError:
-      discard re("(?<a>(?(<a>)x)\\g<a>)")
-
-  test "recursion behind a conditional with an else branch is valid":
-    # Both branches consume, so the call is only reached after input.
-    let r = re("(?<a>(?(<a>)x|y)\\g<a>?)")
-    check r.captureCount == 1
 
 suite "matchSpan on non-matching result":
   test "matchSpan returns UnsetSpan when not found":
